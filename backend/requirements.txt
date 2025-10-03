@@ -1,0 +1,12 @@
+flask
+pandas
+flask-cors
+werkzeug
+pyjwt
+reportlab
+xlsxwriter
+apscheduler
+flask_sqlalchemy
+flask_migrate
+python-dotenv
+gunicorn

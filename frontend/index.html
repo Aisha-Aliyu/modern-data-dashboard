@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Modern Data Dashboard</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+  <header>
+    <div class="header-container">
+      <h1>📊 Modern Data Dashboard</h1>
+      <div class="header-right">
+        <input type="date" id="startDate" title="Start date">
+        <input type="date" id="endDate" title="End date">
+        <select id="timeFilter">
+          <option value="all">All Time</option>
+          <option value="last-3-days">Last 3 Days</option>
+          <option value="last-5-days">Last 5 Days</option>
+        </select>
+        <select id="regionFilter"><option value="">All Regions</option></select>
+        <select id="productFilter"><option value="">All Products</option></select>
+        <button id="themeToggle">🌙</button>
+        <button id="showAuth">Login / Register</button>
+      </div>
+    </div>
+  </header>
+
+  <main class="container">
+    <section class="cards">
+      <div class="card">
+        <h3>Total Sales</h3>
+        <p id="total-sales" class="card-value">0</p>
+      </div>
+      <div class="card">
+        <h3>Total Revenue</h3>
+        <p id="total-revenue" class="card-value">$0</p>
+      </div>
+    </section>
+
+    <section class="charts-grid">
+      <div class="chart-card">
+        <h4>Daily Sales Trend</h4>
+        <canvas id="dailySalesChart"></canvas>
+      </div>
+      <div class="chart-card">
+        <h4>Sales by Product</h4>
+        <canvas id="productChart"></canvas>
+      </div>
+      <div class="chart-card">
+        <h4>Sales by Region</h4>
+        <canvas id="regionChart"></canvas>
+      </div>
+    </section>
+
+    <section class="table-section">
+      <div class="table-controls">
+        <input type="text" id="searchInput" placeholder="Search table...">
+        <div class="export-buttons">
+          <button id="exportCSV">⬇️ Export CSV</button>
+          <button id="exportExcel">📊 Export Excel</button>
+          <button id="exportPDF">📝 Export PDF</button>
+          <button id="scheduleBtn">📅 Schedule Email</button>
+        </div>
+      </div>
+      <div class="table-wrapper">
+        <table id="dataTable">
+          <thead>
+            <tr>
+              <th data-key="date">Date</th>
+              <th data-key="product">Product</th>
+              <th data-key="region">Region</th>
+              <th data-key="sales">Sales</th>
+              <th data-key="revenue">Revenue</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <p>© 2025 Bloodline Studios | Aisha</p>
+  </footer>
+
+  <!-- Simple auth & schedule modal markup -->
+  <div id="modal" class="modal hidden">
+    <div class="modal-content">
+      <button id="closeModal">✖</button>
+      <div id="authForms">
+        <h3>Authenticate</h3>
+        <input id="authEmail" placeholder="Email" type="email">
+        <input id="authPassword" placeholder="Password" type="password">
+        <div style="display:flex;gap:10px;">
+          <button id="registerBtn">Register</button>
+          <button id="loginBtn">Login</button>
+        </div>
+      </div>
+      <div id="scheduleForm" style="margin-top:12px;">
+        <h3>Schedule Email</h3>
+        <input id="schedTargetEmail" placeholder="Send to email">
+        <select id="schedFreq">
+          <option value="weekly">Weekly</option>
+        </select>
+        <div style="display:flex;gap:10px;margin-top:8px;">
+          <button id="confirmSchedule">Schedule</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="scripts.js"></script>
+</body>
+</html>
