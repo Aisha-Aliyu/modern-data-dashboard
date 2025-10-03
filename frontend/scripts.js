@@ -1,5 +1,5 @@
 // frontend/scripts.js
-const API_BASE = "http://127.0.0.1:5000";
+const API_BASE = "https://modern-data-dashboard.onrender.com";
 const STATS_URL = API_BASE + "/api/stats";
 const EXPORT_CSV = API_BASE + "/api/export/csv";
 const EXPORT_EXCEL = API_BASE + "/api/export/excel";
