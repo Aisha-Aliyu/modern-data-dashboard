@@ -182,6 +182,7 @@ footer {
   .header-container {
     flex-direction: column;
     gap: 10px;
+    width: 100%;
   }
 }
 
@@ -335,6 +336,6 @@ footer {
 /* Modal */
 .modal { position: fixed; inset: 0; display:flex; align-items:center; justify-content:center; background: rgba(0,0,0,0.4);}
 .modal.hidden { display:none; }
-.modal-content { background: var(--card-bg); padding: 20px; border-radius: 12px; width: 90%; max-width: 360px; box-shadow: 0 8px 20px rgba(0,0,0,0.25); position: relative;}
+.modal-content { background: var(--card-bg); padding: 20px; border-radius: 12px; width: 100%; max-width: 360px; box-shadow: 0 8px 20px rgba(0,0,0,0.25); position: relative;}
 .modal-content input { width:100%; padding:8px 10px; margin-bottom:8px; border-radius:6px; border:1px solid var(--border-color); }
 .modal-content button#closeModal { position:absolute; top:8px; right:10px; background:transparent; border:none; font-size:1.1rem; cursor:pointer; color:var(--text); }
