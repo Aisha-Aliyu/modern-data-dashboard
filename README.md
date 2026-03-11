@@ -179,7 +179,7 @@ npx http-server frontend -p 3000
 **Aisha Aliyu** — Full-Stack & Frontend Engineer
 
 - 🌐 Portfolio: [humairah.netlify.app](https://humairah.netlify.app)
-- 💼 LinkedIn: [https://www.linkedin.com/in/aisha-aliyu-a9687b233](https://www.linkedin.com/in/aisha-aliyu-a9687b233)
+- 💼 LinkedIn: [https://www.linkedin.com/in/aisha-aliyu-dev](https://www.linkedin.com/in/aisha-aliyu-dev)
 - 🐙 GitHub: [@Aisha-Aliyu](https://github.com/Aisha-Aliyu)
 
 -----
