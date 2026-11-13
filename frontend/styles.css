@@ -407,6 +407,8 @@ header, footer {
 /* The modal sits above the sticky header and scrolls on short screens */
 .modal { z-index: 2000; padding: 16px; }
 .modal-content { max-height: calc(100vh - 32px); max-height: calc(100dvh - 32px); overflow-y: auto; }
+/* The dialog box takes focus when it opens; its fields keep their own focus outlines */
+.modal-content:focus { outline: none; }
 
 @media (max-width: 700px) {
   /* The filters wrap onto several rows on phones, so a sticky header would cover

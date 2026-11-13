@@ -130,8 +130,9 @@ def test_schedule_needs_login_and_has_limits(client, dashboard):
     payload = {"target_email": "boss@example.com", "region": "North", "start_date": "2025-01-01"}
 
     assert client.post("/api/schedule-email", json=payload).status_code == 401
-    bad_target = client.post("/api/schedule-email", json={"target_email": "nope"}, headers=auth_header(token))
-    assert bad_target.status_code == 400
+    for target in ("nope", "Boss<boss@example.com>", "a@example.com,b@example.com"):
+        bad_target = client.post("/api/schedule-email", json={"target_email": target}, headers=auth_header(token))
+        assert bad_target.status_code == 400, target
 
     # Scheduling the same address again updates the schedule rather than adding one
     for region in ("North", "South"):

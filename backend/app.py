@@ -174,7 +174,12 @@ def current_user():
 # -----------------------
 # Request helpers
 # -----------------------
-EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+# A single bare address only. Display names ("Boss <boss@x.com>") and lists are refused,
+# so the address that is stored and counted is exactly the one the email goes to.
+EMAIL_RE = re.compile(
+    r"^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+"
+    r"@[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)+$"
+)
 
 def clean_email(value):
     if not isinstance(value, str):

@@ -28,6 +28,8 @@ let sortDirection = {};
 let sortKey = null;
 let latestStatsRequest = 0;
 let latestLoad = 0;
+let latestDateChange = 0;
+let modalOpener = null;
 let token = readStorage("dashboard_token");
 let userEmail = readStorage("dashboard_email");
 
@@ -63,6 +65,7 @@ function bindUI() {
   el("closeModal").addEventListener("click", closeModal);
   el("modal").addEventListener("click", (e) => { if (e.target === el("modal")) closeModal(); });
   document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeModal(); });
+  document.addEventListener("keydown", trapFocus);
 
   el("registerBtn").addEventListener("click", registerUser);
   el("loginBtn").addEventListener("click", loginUser);
@@ -276,10 +279,13 @@ function fillSelect(id, values, allLabel) {
 // --- applyFiltersAndRender from UI ---
 function applyFiltersAndRender() {
   const preset = el("timeFilter").value;
+  const dateChange = ++latestDateChange;
   return runLoad(async () => {
     // timeFilter preset (last 3/5) sets the start/end dates from the latest dates in the data
     if (preset === "last-3-days" || preset === "last-5-days") {
       if (!allDates.length) await initFilters();
+      // Another date choice was made while the dates were loading, so that one wins
+      if (dateChange !== latestDateChange) return;
       const count = preset === "last-3-days" ? 3 : 5;
       const lastDates = allDates.slice(-count);
       if (lastDates.length) {
@@ -298,6 +304,7 @@ function applyFiltersAndRender() {
 
 // Picking a date by hand switches the preset to "Custom range" so it isn't overwritten
 function onDateChange() {
+  latestDateChange++;
   el("timeFilter").value = el("startDate").value || el("endDate").value ? "custom" : "all";
   refresh();
 }
@@ -440,11 +447,38 @@ function openModal() {
   setMessage("authMessage", "");
   setMessage("scheduleMessage", "");
   updateAuthUI();
+  modalOpener = document.activeElement;
   el("modal").classList.remove("hidden");
+  // Focus goes to the dialog itself rather than a field, so phones don't pop up the keyboard
+  el("modalContent").focus();
 }
 
 function closeModal() {
+  if (el("modal").classList.contains("hidden")) return;
   el("modal").classList.add("hidden");
+  if (modalOpener && document.contains(modalOpener)) modalOpener.focus();
+  modalOpener = null;
+}
+
+// Keeps keyboard focus inside the dialog while it is open
+function trapFocus(e) {
+  if (e.key !== "Tab" || el("modal").classList.contains("hidden")) return;
+  const focusable = [...el("modalContent").querySelectorAll("button, input, select, textarea, a[href]")]
+    .filter(node => !node.disabled && node.offsetParent !== null);
+  if (!focusable.length) return;
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  const active = document.activeElement;
+  if (!el("modalContent").contains(active)) {
+    e.preventDefault();
+    first.focus();
+  } else if (e.shiftKey && (active === first || active === el("modalContent"))) {
+    e.preventDefault();
+    last.focus();
+  } else if (!e.shiftKey && active === last) {
+    e.preventDefault();
+    first.focus();
+  }
 }
 
 function updateAuthUI() {
@@ -496,6 +530,8 @@ function logout() {
   updateAuthUI();
   setMessage("scheduleMessage", "");
   setMessage("authMessage", "You're logged out.", "success");
+  // The button that had focus is now hidden, so keep focus in the dialog if it's open
+  if (!el("modal").classList.contains("hidden")) el("modalContent").focus();
 }
 
 async function submitAuth(url, pendingText) {
@@ -516,6 +552,7 @@ async function submitAuth(url, pendingText) {
     setMessage("authMessage", "");
     setMessage("scheduleMessage", "");
     updateAuthUI();
+    el("modalContent").focus();
   } catch (err) {
     setMessage("authMessage", authErrorMessage(err), "error");
   } finally {
@@ -534,19 +571,28 @@ function loginUser() {
 // Checks that a saved login still works, since the server may have been reset
 async function verifySession() {
   if (!token) return;
+  const requestToken = token;
   try {
     const data = await apiFetch(ME_URL, { headers: authHeaders() });
-    if (data.email) {
+    // Ignore the answer if the visitor logged out or in again while it was on its way
+    if (data.email && token === requestToken) {
       userEmail = data.email;
       writeStorage("dashboard_email", userEmail);
       updateAuthUI();
     }
   } catch (err) {
-    if (err.status === 401) {
+    if (err.status === 401 && token === requestToken) {
       clearSession();
       updateAuthUI();
     }
   }
+}
+
+function sessionExpired(requestToken) {
+  if (token !== requestToken) return;
+  clearSession();
+  updateAuthUI();
+  setMessage("authMessage", "Your login has expired. Please log in again.", "error");
 }
 
 // --- Schedule email endpoint (calls backend to schedule job) ---
@@ -564,6 +610,7 @@ async function scheduleEmail() {
   };
   setBusy(["confirmSchedule"], true);
   setMessage("scheduleMessage", "Scheduling...");
+  const requestToken = token;
   try {
     const data = await apiFetch(SCHEDULE_URL, {
       method: "POST",
@@ -579,9 +626,7 @@ async function scheduleEmail() {
     );
   } catch (err) {
     if (err.status === 401) {
-      clearSession();
-      updateAuthUI();
-      setMessage("authMessage", "Your login has expired. Please log in again.", "error");
+      sessionExpired(requestToken);
       return;
     }
     setMessage("scheduleMessage", authErrorMessage(err), "error");
@@ -594,6 +639,7 @@ async function cancelSchedules() {
   if (!token) return setMessage("scheduleMessage", "Log in or register first.", "error");
   setBusy(["confirmSchedule", "cancelSchedules"], true);
   setMessage("scheduleMessage", "Cancelling...");
+  const requestToken = token;
   try {
     const data = await apiFetch(SCHEDULES_URL, { method: "DELETE", headers: authHeaders() });
     const count = data.count || 0;
@@ -604,9 +650,7 @@ async function cancelSchedules() {
     );
   } catch (err) {
     if (err.status === 401) {
-      clearSession();
-      updateAuthUI();
-      setMessage("authMessage", "Your login has expired. Please log in again.", "error");
+      sessionExpired(requestToken);
       return;
     }
     setMessage("scheduleMessage", authErrorMessage(err), "error");

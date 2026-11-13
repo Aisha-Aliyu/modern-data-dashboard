@@ -13,9 +13,11 @@ def dashboard(tmp_path_factory):
     db_file = tmp_path_factory.mktemp("db") / "test.db"
     os.environ["DASH_DB_URI"] = f"sqlite:///{db_file}"
     os.environ["DASH_JWT_SECRET"] = "test-secret-that-is-long-enough-for-hs256"
+    # Empty rather than removed, so a local backend/.env can't switch real email on
+    # (python-dotenv leaves variables that are already set alone)
     for name in ("DASH_SMTP_HOST", "DASH_SMTP_USER", "DASH_SMTP_PASS",
                  "MAIL_SERVER", "MAIL_USERNAME", "MAIL_PASSWORD"):
-        os.environ.pop(name, None)
+        os.environ[name] = ""
     if BACKEND_DIR not in sys.path:
         sys.path.insert(0, BACKEND_DIR)
     module = importlib.import_module("app")
