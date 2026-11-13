@@ -25,6 +25,5 @@ def dashboard(tmp_path_factory):
 
 @pytest.fixture()
 def client(dashboard):
-    dashboard.auth_requests_by_ip.reset()
-    dashboard.failed_logins_by_email.reset()
+    dashboard.reset_rate_limits()
     return dashboard.app.test_client()

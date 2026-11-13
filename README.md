@@ -166,6 +166,8 @@ npx http-server frontend -p 3000
 
 **Backend** can be deployed on [Railway](https://railway.app/), [Render](https://render.com/), or any Python-compatible host. Set your environment variables in the platform dashboard.
 
+On a free host whose disk resets on restart (Render, for example), set `DASH_DB_URI` to a hosted Postgres database so accounts are kept, and set `DASH_JWT_SECRET` so logins survive restarts. Run a single gunicorn worker (the default), because the weekly reports are scheduled inside the web process.
+
 -----
 
 ## 🗺️ Roadmap

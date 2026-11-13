@@ -26,7 +26,9 @@ def auth_header(token):
 def test_health_reports_database(client):
     res = client.get("/api/health")
     assert res.status_code == 200
-    assert res.get_json()["database"] == "ok"
+    body = res.get_json()
+    assert body["database"] == "ok"
+    assert body["database_engine"] == "sqlite"
 
 
 def test_stats_match_the_csv_and_use_iso_dates(client):
@@ -100,6 +102,29 @@ def test_repeated_wrong_passwords_are_slowed_down(client):
     assert res.status_code == 429
 
 
+def test_someone_else_cannot_lock_you_out(client):
+    assert register(client, "victim@example.com").status_code == 200
+    attacker = {"CF-Connecting-IP": "203.0.113.5"}
+    for _ in range(8):
+        client.post("/api/login", json={"email": "victim@example.com", "password": "guess guess"}, headers=attacker)
+    blocked = client.post("/api/login", json={"email": "victim@example.com", "password": "guess guess"}, headers=attacker)
+    assert blocked.status_code == 429
+
+    owner = {"CF-Connecting-IP": "198.51.100.7"}
+    res = client.post("/api/login", json={"email": "victim@example.com", "password": "correct horse"}, headers=owner)
+    assert res.status_code == 200
+
+
+def test_faked_forwarded_for_does_not_dodge_the_limit(client):
+    statuses = []
+    for i in range(21):
+        headers = {"X-Forwarded-For": f"10.0.0.{i}, 192.0.2.50"}
+        res = client.post("/api/login", json={"email": f"nobody{i}@example.com", "password": "guess guess"}, headers=headers)
+        statuses.append(res.status_code)
+    assert statuses[:20] == [401] * 20
+    assert statuses[20] == 429
+
+
 def test_schedule_needs_login_and_has_limits(client, dashboard):
     token = register(client, "scheduler@example.com").get_json()["token"]
     payload = {"target_email": "boss@example.com", "region": "North", "start_date": "2025-01-01"}
@@ -108,18 +133,36 @@ def test_schedule_needs_login_and_has_limits(client, dashboard):
     bad_target = client.post("/api/schedule-email", json={"target_email": "nope"}, headers=auth_header(token))
     assert bad_target.status_code == 400
 
-    for _ in range(dashboard.MAX_SCHEDULES_PER_USER):
-        res = client.post("/api/schedule-email", json=payload, headers=auth_header(token))
+    # Scheduling the same address again updates the schedule rather than adding one
+    for region in ("North", "South"):
+        res = client.post("/api/schedule-email", json={**payload, "region": region}, headers=auth_header(token))
         assert res.status_code == 200
         assert res.get_json()["email_enabled"] is False
-    assert client.post("/api/schedule-email", json=payload, headers=auth_header(token)).status_code == 400
-
     schedules = client.get("/api/schedules", headers=auth_header(token)).get_json()["schedules"]
-    assert len(schedules) == dashboard.MAX_SCHEDULES_PER_USER
+    assert len(schedules) == 1
+    assert schedules[0]["region"] == "South"
 
-    # Another account can't push the same inbox past the limit either
-    other = register(client, "other@example.com").get_json()["token"]
-    assert client.post("/api/schedule-email", json=payload, headers=auth_header(other)).status_code == 400
+    for i in range(2, dashboard.MAX_SCHEDULES_PER_USER + 1):
+        res = client.post("/api/schedule-email", json={"target_email": f"boss{i}@example.com"}, headers=auth_header(token))
+        assert res.status_code == 200
+    over = client.post("/api/schedule-email", json={"target_email": "one-more@example.com"}, headers=auth_header(token))
+    assert over.status_code == 400
+
+    # Cancelling frees the slots again
+    cancelled = client.delete("/api/schedules", headers=auth_header(token))
+    assert cancelled.status_code == 200
+    assert cancelled.get_json()["count"] == dashboard.MAX_SCHEDULES_PER_USER
+    assert client.get("/api/schedules", headers=auth_header(token)).get_json()["schedules"] == []
+    assert client.delete("/api/schedules").status_code == 401
+
+
+def test_one_inbox_cannot_be_flooded_from_many_accounts(client, dashboard):
+    payload = {"target_email": "shared-inbox@example.com"}
+    for i in range(dashboard.MAX_SCHEDULES_PER_TARGET):
+        token = register(client, f"sender{i}@example.com").get_json()["token"]
+        assert client.post("/api/schedule-email", json=payload, headers=auth_header(token)).status_code == 200
+    token = register(client, "sender-extra@example.com").get_json()["token"]
+    assert client.post("/api/schedule-email", json=payload, headers=auth_header(token)).status_code == 400
 
 
 def test_exports(client):

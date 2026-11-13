@@ -5,6 +5,7 @@ import re
 import base64
 import logging
 import secrets
+import sys
 import threading
 import time
 from collections import defaultdict, deque
@@ -184,9 +185,19 @@ def clean_email(value):
     return email
 
 def client_ip():
-    # Render sits in front of the app, so the visitor's address is in X-Forwarded-For
-    forwarded = request.headers.get("X-Forwarded-For", "")
-    return forwarded.split(",")[0].strip() or request.remote_addr or "unknown"
+    """The visitor's IP address, in a form the visitor can't fake.
+
+    Render serves apps through Cloudflare, which sets CF-Connecting-IP itself. The first
+    X-Forwarded-For entry can't be trusted because Render keeps whatever the visitor
+    sent there; the last entry was added by the proxy closest to the app."""
+    for header in ("CF-Connecting-IP", "True-Client-IP"):
+        value = request.headers.get(header, "").strip()
+        if value:
+            return value
+    forwarded = [part.strip() for part in request.headers.get("X-Forwarded-For", "").split(",") if part.strip()]
+    if forwarded:
+        return forwarded[-1]
+    return request.remote_addr or "unknown"
 
 def json_body():
     data = request.get_json(silent=True)
@@ -211,11 +222,15 @@ class AttemptLimiter:
     It lives in memory, so it resets when the server restarts. That is enough to slow
     down password guessing on a single small server."""
 
+    MAX_KEYS = 10000
+    SWEEP_EVERY_SECONDS = 60
+
     def __init__(self, limit, window_seconds):
         self.limit = limit
         self.window = window_seconds
         self.hits = defaultdict(deque)
         self.lock = threading.Lock()
+        self.last_sweep = time.monotonic()
 
     def _prune(self, key, now):
         attempts = self.hits.get(key)
@@ -233,9 +248,13 @@ class AttemptLimiter:
     def add(self, key):
         now = time.monotonic()
         with self.lock:
-            if len(self.hits) > 10000:
+            if len(self.hits) > self.MAX_KEYS and now - self.last_sweep > self.SWEEP_EVERY_SECONDS:
+                self.last_sweep = now
                 for stale in list(self.hits):
                     self._prune(stale, now)
+                if len(self.hits) > self.MAX_KEYS:
+                    # Flooded with new keys: start over instead of growing without limit
+                    self.hits.clear()
             self.hits[key].append(now)
 
     def reset(self, key=None):
@@ -247,7 +266,16 @@ class AttemptLimiter:
 
 
 auth_requests_by_ip = AttemptLimiter(limit=20, window_seconds=600)
-failed_logins_by_email = AttemptLimiter(limit=8, window_seconds=900)
+# Wrong passwords are counted per visitor and account, so someone else can't lock a
+# person out of their own account, plus a looser count per account against guessing
+# spread over many addresses
+failed_logins = AttemptLimiter(limit=8, window_seconds=900)
+failed_logins_for_email = AttemptLimiter(limit=50, window_seconds=3600)
+
+
+def reset_rate_limits():
+    for limiter in (auth_requests_by_ip, failed_logins, failed_logins_for_email):
+        limiter.reset()
 
 # -----------------------
 # Database helpers
@@ -456,14 +484,35 @@ def send_email_with_pdf(to_email, subject, body_text, pdf_buffer, filename="repo
 # Scheduler job
 # -----------------------
 def scheduled_job_send(id, target_email, region, product, start_date, end_date):
-    try:
-        df = apply_filters(load_data(), start_date=start_date, end_date=end_date, region=region, product=product)
-        stats = aggregate_stats(df)
-        pdf_buffer = build_pdf_buffer({}, stats, title="Scheduled Dashboard Report")
-        success, msg = send_email_with_pdf(target_email, "Scheduled Dashboard Report", "Attached is your scheduled report.", pdf_buffer, filename="scheduled_report.pdf")
-        logger.info("Scheduled send %s: %s %s", id, success, msg)
-    except Exception:
-        logger.exception("Scheduled job error")
+    with app.app_context():
+        # Read the schedule fresh, so a cancelled or edited schedule is respected
+        try:
+            schedule = ScheduledEmail.query.filter_by(id=id).first()
+        except SQLAlchemyError:
+            db.session.rollback()
+            logger.exception("Could not read scheduled report %s", id)
+            return
+        if schedule is None:
+            remove_schedule_job(id)
+            return
+
+        try:
+            df = apply_filters(load_data(), start_date=schedule.start_date, end_date=schedule.end_date,
+                               region=schedule.region, product=schedule.product)
+            stats = aggregate_stats(df)
+            pdf_buffer = build_pdf_buffer({}, stats, title="Scheduled Dashboard Report")
+            success, msg = send_email_with_pdf(schedule.target_email, "Scheduled Dashboard Report", "Attached is your scheduled report.", pdf_buffer, filename="scheduled_report.pdf")
+            logger.info("Scheduled send %s: %s %s", id, success, msg)
+        except Exception:
+            logger.exception("Scheduled job error")
+
+        # Saving the next run means a restart picks up from here instead of sending again
+        try:
+            schedule.next_run = utcnow() + timedelta(days=7)
+            db.session.commit()
+        except SQLAlchemyError:
+            db.session.rollback()
+            logger.exception("Could not save the next run for scheduled report %s", id)
 
 def add_schedule_job(schedule_id, target_email, region, product, start_date, end_date, first_run):
     scheduler.add_job(
@@ -473,8 +522,18 @@ def add_schedule_job(schedule_id, target_email, region, product, start_date, end
         next_run_time=first_run,
         id=f"scheduled_email_{schedule_id}",
         replace_existing=True,
+        # The free server sleeps when idle, so a report that comes due while it is asleep
+        # goes out once when it wakes up instead of being skipped
+        misfire_grace_time=None,
+        coalesce=True,
         args=[schedule_id, target_email, region, product, start_date, end_date]
     )
+
+def remove_schedule_job(schedule_id):
+    try:
+        scheduler.remove_job(f"scheduled_email_{schedule_id}")
+    except Exception:
+        pass  # the job was already gone
 
 # -----------------------
 # Error responses
@@ -506,7 +565,13 @@ def health():
     except Exception:
         db.session.rollback()
         database = "unavailable"
-    return jsonify({"status": "ok", "database": database, "email_enabled": EMAIL_ENABLED})
+    return jsonify({
+        "status": "ok",
+        "database": database,
+        # "sqlite" on Render means accounts are wiped whenever the free server restarts
+        "database_engine": DB_URI.split(":", 1)[0].split("+", 1)[0],
+        "email_enabled": EMAIL_ENABLED,
+    })
 
 @app.route("/api/register", methods=["POST"])
 def register():
@@ -553,7 +618,9 @@ def login():
         return error("Please enter your password.", 400)
 
     ip = client_ip()
-    if auth_requests_by_ip.blocked(ip) or failed_logins_by_email.blocked(email):
+    visitor_and_account = f"{ip}|{email}"
+    if (auth_requests_by_ip.blocked(ip) or failed_logins.blocked(visitor_and_account)
+            or failed_logins_for_email.blocked(email)):
         return too_many_attempts()
     auth_requests_by_ip.add(ip)
 
@@ -565,10 +632,11 @@ def login():
         return database_unavailable()
 
     if not user or len(password) > 128 or not check_password_hash(user.password_hash, password):
-        failed_logins_by_email.add(email)
+        failed_logins.add(visitor_and_account)
+        failed_logins_for_email.add(email)
         return error("That email and password don't match an account.", 401)
 
-    failed_logins_by_email.reset(email)
+    failed_logins.reset(visitor_and_account)
     token = create_jwt({"email": email})
     return jsonify({"message": "logged_in", "token": token, "email": email})
 
@@ -648,25 +716,35 @@ def schedule_email():
     freq = "weekly"  # the only frequency the scheduler supports
 
     try:
-        if ScheduledEmail.query.filter_by(user_email=user.email).count() >= MAX_SCHEDULES_PER_USER:
-            return error(f"You already have {MAX_SCHEDULES_PER_USER} scheduled reports, which is the limit.", 400)
-        if ScheduledEmail.query.filter_by(target_email=target_email).count() >= MAX_SCHEDULES_PER_TARGET:
-            return error("That address already gets the maximum number of scheduled reports.", 400)
-
         # calculate next_run (simple: next week)
         now = utcnow()
-        entry = {
-            "user_email": user.email,
-            "target_email": target_email,
-            "region": region,
-            "product": product,
-            "start_date": start_date,
-            "end_date": end_date,
-            "freq": freq,
-            "next_run": (now + timedelta(days=7)).isoformat(),
-            "created_at": now.isoformat()
-        }
-        rowid = add_scheduled_email_to_db(entry)
+        existing = ScheduledEmail.query.filter_by(user_email=user.email, target_email=target_email).first()
+        if existing:
+            # Scheduling the same address again updates that schedule instead of adding one
+            existing.region = region
+            existing.product = product
+            existing.start_date = to_datetime_or_none(start_date)
+            existing.end_date = to_datetime_or_none(end_date)
+            existing.next_run = now + timedelta(days=7)
+            rowid = existing.id
+            db.session.commit()
+        else:
+            if ScheduledEmail.query.filter_by(user_email=user.email).count() >= MAX_SCHEDULES_PER_USER:
+                return error(f"You already have {MAX_SCHEDULES_PER_USER} scheduled reports, which is the limit. Cancel them to start again.", 400)
+            if ScheduledEmail.query.filter_by(target_email=target_email).count() >= MAX_SCHEDULES_PER_TARGET:
+                return error("That address already gets the maximum number of scheduled reports.", 400)
+            entry = {
+                "user_email": user.email,
+                "target_email": target_email,
+                "region": region,
+                "product": product,
+                "start_date": start_date,
+                "end_date": end_date,
+                "freq": freq,
+                "next_run": (now + timedelta(days=7)).isoformat(),
+                "created_at": now.isoformat()
+            }
+            rowid = add_scheduled_email_to_db(entry)
     except SQLAlchemyError:
         db.session.rollback()
         logger.exception("Saving a schedule failed")
@@ -693,13 +771,33 @@ def api_schedules():
     schedules = [s for s in schedules if s["user_email"] == user.email]
     return jsonify({"schedules": schedules})
 
+# Cancel every scheduled report the logged-in user created
+@app.route("/api/schedules", methods=["DELETE"])
+def cancel_schedules():
+    try:
+        user = current_user()
+        if not user:
+            return unauthorized()
+        schedules = ScheduledEmail.query.filter_by(user_email=user.email).all()
+        schedule_ids = [schedule.id for schedule in schedules]
+        for schedule in schedules:
+            db.session.delete(schedule)
+        db.session.commit()
+    except SQLAlchemyError:
+        db.session.rollback()
+        logger.exception("Cancelling schedules failed")
+        return database_unavailable()
+    for schedule_id in schedule_ids:
+        remove_schedule_job(schedule_id)
+    return jsonify({"message": "cancelled", "count": len(schedule_ids)})
+
 # Initialize DB & load existing scheduled jobs
 def load_existing_schedules_into_jobs():
     for s in get_all_schedules():
         if scheduler.get_job(f"scheduled_email_{s['id']}"):
             continue
-        # A next_run in the past is skipped by the scheduler and the job carries on weekly
-        # from there, so restarting the server doesn't send everyone an extra email
+        # next_run is saved after every send, so a restart only sends a report that
+        # really came due while the server was asleep
         if s["next_run"]:
             next_run = datetime.fromisoformat(s["next_run"]).replace(tzinfo=timezone.utc)
         else:
@@ -724,7 +822,14 @@ def init_database():
         except Exception:
             logger.exception("Could not load saved email schedules")
 
-init_database()
+def running_migration_command():
+    """True for `flask db ...`, which manages the tables itself through Alembic."""
+    script = sys.argv[0] if sys.argv else ""
+    called_flask = os.path.basename(script).startswith("flask") or script.endswith(os.path.join("flask", "__main__.py"))
+    return called_flask and len(sys.argv) > 1 and sys.argv[1] == "db"
+
+if not running_migration_command():
+    init_database()
 
 # -----------------------
 # Run app

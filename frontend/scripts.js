@@ -6,6 +6,7 @@ const EXPORT_CSV = API_BASE + "/api/export/csv";
 const EXPORT_EXCEL = API_BASE + "/api/export/excel";
 const EXPORT_PDF = API_BASE + "/api/export/pdf";
 const SCHEDULE_URL = API_BASE + "/api/schedule-email";
+const SCHEDULES_URL = API_BASE + "/api/schedules";
 const LOGIN_URL = API_BASE + "/api/login";
 const REGISTER_URL = API_BASE + "/api/register";
 const ME_URL = API_BASE + "/api/me";
@@ -14,7 +15,9 @@ const ME_URL = API_BASE + "/api/me";
 // for a while. Waking it up takes up to a minute and requests can fail while it starts,
 // so loading the data keeps retrying for this long before showing an error.
 const WAKE_UP_WINDOW_MS = 100000;
+const AUTH_RETRY_WINDOW_MS = 45000;
 const REQUEST_TIMEOUT_MS = 70000;
+const MIN_ATTEMPT_MS = 15000;
 const WAKING_MESSAGE = "Loading the data. The server sleeps when nobody has used it for a while, so the first visit can take up to a minute.";
 
 let dailySalesChart, productChart, regionChart;
@@ -66,6 +69,7 @@ function bindUI() {
   el("authPassword").addEventListener("keydown", (e) => { if (e.key === "Enter") loginUser(); });
   el("logoutBtn").addEventListener("click", logout);
   el("confirmSchedule").addEventListener("click", scheduleEmail);
+  el("cancelSchedules").addEventListener("click", cancelSchedules);
 }
 
 // --- Talking to the API ---
@@ -89,13 +93,15 @@ async function fetchWithTimeout(url, options = {}, ms = REQUEST_TIMEOUT_MS) {
 }
 
 // Returns the parsed JSON, or throws an ApiError with a message that can be shown as is.
-// With wakeUp, failures that happen while Render is starting the server are retried.
-async function apiFetch(url, options = {}, { wakeUp = false } = {}) {
-  const giveUpAt = Date.now() + (wakeUp ? WAKE_UP_WINDOW_MS : 0);
+// Failures that happen while Render is starting the server are retried for retryFor ms.
+async function apiFetch(url, options = {}, { retryFor = 0 } = {}) {
+  const giveUpAt = Date.now() + retryFor;
   for (let attempt = 1; ; attempt++) {
     let res;
     try {
-      res = await fetchWithTimeout(url, options);
+      // Keep the whole thing close to the retry window instead of starting a long attempt at the end
+      const timeLeft = giveUpAt - Date.now();
+      res = await fetchWithTimeout(url, options, retryFor ? Math.min(REQUEST_TIMEOUT_MS, Math.max(timeLeft, MIN_ATTEMPT_MS)) : REQUEST_TIMEOUT_MS);
     } catch (err) {
       if (Date.now() < giveUpAt) {
         await sleep(Math.min(2000 * attempt, 8000));
@@ -159,17 +165,17 @@ function loadDashboard() {
   return runLoad(async () => {
     // The filter options load alongside the data and are fetched once more if that fails
     initFilters().catch(() => setTimeout(() => initFilters().catch(() => {}), 5000));
-    await fetchAndRender({ wakeUp: true });
+    await fetchAndRender();
     verifySession();
   });
 }
 
 function refresh() {
-  return runLoad(() => fetchAndRender({ wakeUp: true }));
+  return runLoad(() => fetchAndRender());
 }
 
 // --- Fetch & Render ---
-async function fetchAndRender({ wakeUp = false } = {}) {
+async function fetchAndRender() {
   const params = new URLSearchParams();
   const startDate = el("startDate").value;
   const endDate = el("endDate").value;
@@ -183,7 +189,7 @@ async function fetchAndRender({ wakeUp = false } = {}) {
   const url = STATS_URL + (params.toString() ? `?${params.toString()}` : "");
 
   const requestId = ++latestStatsRequest;
-  const data = await apiFetch(url, {}, { wakeUp });
+  const data = await apiFetch(url, {}, { retryFor: WAKE_UP_WINDOW_MS });
   if (requestId !== latestStatsRequest) return; // a newer filter change replaced this one
   currentData = data;
   updateSummaryCards(data);
@@ -252,7 +258,7 @@ function showChartMessage(message) {
 
 // --- Filters population (region/product) ---
 async function initFilters() {
-  const rows = await apiFetch(DATA_URL, {}, { wakeUp: true });
+  const rows = await apiFetch(DATA_URL, {}, { retryFor: WAKE_UP_WINDOW_MS });
   allDates = [...new Set(rows.map(r => toISODate(r.date)))].sort();
   fillSelect("regionFilter", [...new Set(rows.map(r => r.region))].filter(Boolean).sort(), "All Regions");
   fillSelect("productFilter", [...new Set(rows.map(r => r.product))].filter(Boolean).sort(), "All Products");
@@ -286,7 +292,7 @@ function applyFiltersAndRender() {
       el("endDate").value = "";
     }
     // "custom" keeps whatever dates are already picked
-    await fetchAndRender({ wakeUp: true });
+    await fetchAndRender();
   });
 }
 
@@ -364,11 +370,11 @@ function initSearch() {
 
 // --- Exports (CSV/Excel) ---
 function initExportButtons() {
-  el("exportCSV").addEventListener("click", () => exportData(EXPORT_CSV));
-  el("exportExcel").addEventListener("click", () => exportData(EXPORT_EXCEL));
+  el("exportCSV").addEventListener("click", () => exportData(EXPORT_CSV, "dashboard_data.csv", el("exportCSV")));
+  el("exportExcel").addEventListener("click", () => exportData(EXPORT_EXCEL, "dashboard_data.xlsx", el("exportExcel")));
 }
 
-function exportData(baseUrl){
+function exportData(baseUrl, filename, button){
   const params = new URLSearchParams();
   const region = el("regionFilter").value;
   const product = el("productFilter").value;
@@ -378,7 +384,31 @@ function exportData(baseUrl){
   if (product) params.append("product", product);
   if (startDate) params.append("start_date", startDate);
   if (endDate) params.append("end_date", endDate);
-  window.location.href = `${baseUrl}?${params.toString()}`;
+  return downloadFile(`${baseUrl}?${params.toString()}`, {}, filename, button);
+}
+
+// Downloads in the background, so a slow or failed export never takes the visitor
+// away from the dashboard
+async function downloadFile(url, options, filename, button) {
+  button.disabled = true;
+  try {
+    const res = await fetchWithTimeout(url, options);
+    if (!res.ok) {
+      const data = await res.json().catch(() => null);
+      throw new ApiError(data && data.error ? data.error : `The export failed (${res.status}).`, res.status);
+    }
+    const blob = await res.blob();
+    const href = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = href; a.download = filename; document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(href), 1000);
+  } catch (err) {
+    alert(err instanceof ApiError
+      ? err.message
+      : "Couldn't reach the server for the export. It may still be starting up, so try again in a minute.");
+  } finally {
+    button.disabled = false;
+  }
 }
 
 // --- PDF export (sends chart images & summary to backend) ---
@@ -386,36 +416,23 @@ function initPDFExport() {
   el("exportPDF").addEventListener("click", exportPDF);
 }
 
-async function exportPDF() {
+function exportPDF() {
   if (!dailySalesChart || !productChart || !regionChart) return alert("Charts not ready");
   const charts = {
     "Daily Sales Trend": dailySalesChart.toBase64Image(),
     "Sales by Product": productChart.toBase64Image(),
     "Sales by Region": regionChart.toBase64Image()
   };
+  // Taken from the data rather than the cards, whose number format depends on the browser's language
   const summary = {
-    total_sales: parseInt(el("total-sales").textContent.replace(/,/g,"")),
-    total_revenue: parseFloat(el("total-revenue").textContent.replace(/[$,]/g,""))
+    total_sales: (currentData && currentData.total_sales) || 0,
+    total_revenue: (currentData && currentData.total_revenue) || 0
   };
-  const button = el("exportPDF");
-  button.disabled = true;
-  try {
-    const res = await fetchWithTimeout(EXPORT_PDF, {
-      method: "POST",
-      headers: {"Content-Type":"application/json"},
-      body: JSON.stringify({charts, summary})
-    });
-    if (!res.ok) throw new Error(`PDF export failed (${res.status})`);
-    const blob = await res.blob();
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url; a.download = "dashboard_report.pdf"; document.body.appendChild(a); a.click(); a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
-  } catch (err) {
-    alert("Couldn't create the PDF. The server may still be starting up, so try again in a minute.");
-  } finally {
-    button.disabled = false;
-  }
+  return downloadFile(EXPORT_PDF, {
+    method: "POST",
+    headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({charts, summary})
+  }, "dashboard_report.pdf", el("exportPDF"));
 }
 
 // --- Auth: Register & Login ---
@@ -492,7 +509,7 @@ async function submitAuth(url, pendingText) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email, password })
-    });
+    }, { retryFor: AUTH_RETRY_WINDOW_MS });
     if (!data.token) throw new ApiError("Something went wrong. Please try again.", 500);
     saveSession(data.token, data.email || email.toLowerCase());
     el("authPassword").value = "";
@@ -570,6 +587,31 @@ async function scheduleEmail() {
     setMessage("scheduleMessage", authErrorMessage(err), "error");
   } finally {
     setBusy(["confirmSchedule"], false);
+  }
+}
+
+async function cancelSchedules() {
+  if (!token) return setMessage("scheduleMessage", "Log in or register first.", "error");
+  setBusy(["confirmSchedule", "cancelSchedules"], true);
+  setMessage("scheduleMessage", "Cancelling...");
+  try {
+    const data = await apiFetch(SCHEDULES_URL, { method: "DELETE", headers: authHeaders() });
+    const count = data.count || 0;
+    setMessage(
+      "scheduleMessage",
+      count ? `Cancelled ${count} scheduled report${count === 1 ? "" : "s"}.` : "You don't have any scheduled reports.",
+      "success"
+    );
+  } catch (err) {
+    if (err.status === 401) {
+      clearSession();
+      updateAuthUI();
+      setMessage("authMessage", "Your login has expired. Please log in again.", "error");
+      return;
+    }
+    setMessage("scheduleMessage", authErrorMessage(err), "error");
+  } finally {
+    setBusy(["confirmSchedule", "cancelSchedules"], false);
   }
 }
 
