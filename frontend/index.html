@@ -6,7 +6,7 @@
   <title>Modern Data Dashboard</title>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css">
-  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.js"></script>
 </head>
 <body>
   <header>
@@ -19,6 +19,7 @@
           <option value="all">All Time</option>
           <option value="last-3-days">Last 3 Days</option>
           <option value="last-5-days">Last 5 Days</option>
+          <option value="custom">Custom</option>
         </select>
         <select id="regionFilter"><option value="">All Regions</option></select>
         <select id="productFilter"><option value="">All Products</option></select>
@@ -29,6 +30,11 @@
   </header>
 
   <main class="container">
+    <div id="serverStatus" class="server-status" role="status" aria-live="polite" hidden>
+      <p id="serverStatusText"></p>
+      <button id="retryLoad" type="button" hidden>Try again</button>
+    </div>
+
     <section class="cards">
       <div class="card">
         <h3>Total Sales</h3>
@@ -43,15 +49,15 @@
     <section class="charts-grid">
       <div class="chart-card">
         <h4>Daily Sales Trend</h4>
-        <canvas id="dailySalesChart"></canvas>
+        <div class="chart-box"><canvas id="dailySalesChart"></canvas></div>
       </div>
       <div class="chart-card">
         <h4>Sales by Product</h4>
-        <canvas id="productChart"></canvas>
+        <div class="chart-box"><canvas id="productChart"></canvas></div>
       </div>
       <div class="chart-card">
         <h4>Sales by Region</h4>
-        <canvas id="regionChart"></canvas>
+        <div class="chart-box"><canvas id="regionChart"></canvas></div>
       </div>
     </section>
 
@@ -83,31 +89,41 @@
   </main>
 
   <footer>
-    <p>© 2025 Bloodline Studios | Aisha</p>
+    <p>© <span id="footerYear">2026</span> Aisha Aliyu</p>
   </footer>
 
   <!-- Simple auth & schedule modal markup -->
-  <div id="modal" class="modal hidden">
+  <div id="modal" class="modal hidden" role="dialog" aria-modal="true" aria-label="Account and email reports">
     <div class="modal-content">
-      <button id="closeModal">✖</button>
+      <button id="closeModal" aria-label="Close">✖</button>
       <div id="authForms">
         <h3>Authenticate</h3>
-        <input id="authEmail" placeholder="Email" type="email">
-        <input id="authPassword" placeholder="Password" type="password">
+        <input id="authEmail" placeholder="Email" type="email" autocomplete="email">
+        <input id="authPassword" placeholder="Password (at least 8 characters)" type="password" autocomplete="current-password">
         <div style="display:flex;gap:10px;">
           <button id="registerBtn">Register</button>
           <button id="loginBtn">Login</button>
         </div>
+        <p id="authMessage" class="form-message" role="status" aria-live="polite"></p>
+      </div>
+      <div id="accountPanel" hidden>
+        <h3>Account</h3>
+        <p id="accountNote" class="form-note"></p>
+        <button id="logoutBtn">Log out</button>
       </div>
       <div id="scheduleForm" style="margin-top:12px;">
         <h3>Schedule Email</h3>
-        <input id="schedTargetEmail" placeholder="Send to email">
-        <select id="schedFreq">
-          <option value="weekly">Weekly</option>
-        </select>
-        <div style="display:flex;gap:10px;margin-top:8px;">
-          <button id="confirmSchedule">Schedule</button>
+        <p id="scheduleHint" class="form-note">Log in or register above to schedule a weekly report.</p>
+        <div id="scheduleFields" hidden>
+          <input id="schedTargetEmail" placeholder="Send to email" type="email" autocomplete="email">
+          <select id="schedFreq">
+            <option value="weekly">Weekly</option>
+          </select>
+          <div style="display:flex;gap:10px;margin-top:8px;">
+            <button id="confirmSchedule">Schedule</button>
+          </div>
         </div>
+        <p id="scheduleMessage" class="form-message" role="status" aria-live="polite"></p>
       </div>
     </div>
   </div>
