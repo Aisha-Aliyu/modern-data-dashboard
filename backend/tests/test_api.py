@@ -2,6 +2,8 @@ import csv
 import io
 import os
 import re
+
+import pytest
 from datetime import datetime, timedelta, timezone
 
 CSV_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "sales_data.csv")
@@ -30,7 +32,7 @@ def test_health_reports_database(client):
     assert res.status_code == 200
     body = res.get_json()
     assert body["database"] == "ok"
-    assert body["database_engine"] == "sqlite"
+    assert body["database_engine"] == ("postgresql" if os.environ.get("TEST_DATABASE_URL") else "sqlite")
 
 
 def test_stats_match_the_csv_and_use_iso_dates(client):
@@ -310,3 +312,21 @@ def test_failure_while_sending_still_counts(dashboard, monkeypatch):
     assert not ok
     # The message may have been delivered before the drop, so it stays counted
     assert dashboard.emails_today.used == 1
+
+
+def test_postgres_links_use_the_installed_driver(dashboard, monkeypatch):
+    for link in ("postgres://u:p@db.example.com/app", "postgresql://u:p@db.example.com/app?sslmode=require"):
+        monkeypatch.setenv("DASH_DB_URI", link)
+        assert dashboard.database_uri().startswith("postgresql+psycopg2://u:p@db.example.com/app")
+    monkeypatch.setenv("DASH_DB_URI", "postgresql+psycopg2://u:p@db.example.com/app")
+    assert dashboard.database_uri() == "postgresql+psycopg2://u:p@db.example.com/app"
+
+
+def test_postgres_engine_loads_its_driver(dashboard, monkeypatch):
+    # Creating the engine imports the driver without connecting, which is the step that
+    # crashed the Render deploy when SQLAlchemy 2.1 looked for psycopg 3
+    pytest.importorskip("psycopg2")
+    from sqlalchemy import create_engine
+    monkeypatch.setenv("DASH_DB_URI", "postgresql://u:p@db.example.com/app?sslmode=require")
+    engine = create_engine(dashboard.database_uri())
+    assert engine.dialect.driver == "psycopg2"

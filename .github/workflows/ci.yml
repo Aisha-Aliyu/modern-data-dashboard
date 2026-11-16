@@ -23,6 +23,37 @@ jobs:
       - name: Run tests
         run: pytest -q backend/tests
 
+  backend-postgres:
+    name: Backend tests (Postgres)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: dashboard
+          POSTGRES_PASSWORD: dashboard
+          POSTGRES_DB: dashboard_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U dashboard"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # A plain postgresql:// link, like the ones Neon and Render hand out
+      TEST_DATABASE_URL: postgresql://dashboard:dashboard@localhost:5432/dashboard_test
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Install dependencies
+        run: pip install -r requirements.txt pytest
+      - name: Run tests against Postgres
+        run: pytest -q backend/tests
+
   frontend:
     name: Frontend checks
     runs-on: ubuntu-latest

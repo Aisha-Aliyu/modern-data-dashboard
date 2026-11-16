@@ -71,9 +71,12 @@ def database_uri():
     uri = env("DASH_DB_URI", "DATABASE_URL")
     if not uri:
         return f"sqlite:///{os.path.join(BASE_DIR, 'dashboard.db')}"
-    # Hosts often hand out postgres:// links, which SQLAlchemy no longer accepts
-    if uri.startswith("postgres://"):
-        uri = "postgresql://" + uri[len("postgres://"):]
+    # Hosts hand out postgres:// or postgresql:// links. SQLAlchemy no longer accepts the
+    # first, and since version 2.1 it uses the psycopg 3 driver for the second, while this
+    # app installs psycopg2. Naming the driver keeps both kinds of link working.
+    for prefix in ("postgres://", "postgresql://"):
+        if uri.startswith(prefix):
+            return "postgresql+psycopg2://" + uri[len(prefix):]
     return uri
 
 
