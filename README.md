@@ -101,7 +101,7 @@ modern-data-dashboard/
 
 ### Prerequisites
 
-- Python 3.8+
+- Python 3.9+
 - Node.js (optional, for frontend tooling)
 
 ### 1. Clone the repo
@@ -126,13 +126,17 @@ pip install -r requirements.txt
 
 ### 3. Configure environment variables
 
-Create a `.env` file in `/backend`:
+Create a `.env` file in `/backend`. All of these are optional when running locally. Without `DASH_DB_URI` the app uses a SQLite file, and without the SMTP settings scheduled reports are saved but not emailed.
 
 ```env
-SECRET_KEY=your_jwt_secret_key
-DATABASE_URL=sqlite:///dashboard.db
-MAIL_USERNAME=your_email@gmail.com
-MAIL_PASSWORD=your_email_password
+# Postgres connection string; leave it out to use SQLite
+DASH_DB_URI=postgresql://user:password@host:5432/dbname
+# Long random string used to sign logins
+DASH_JWT_SECRET=your_long_random_secret
+DASH_SMTP_HOST=smtp.gmail.com
+DASH_SMTP_PORT=587
+DASH_SMTP_USER=your_email@gmail.com
+DASH_SMTP_PASS=your_app_password
 ```
 
 ### 4. Run the Flask backend
@@ -161,6 +165,8 @@ npx http-server frontend -p 3000
 **Frontend** is deployed on **Netlify** — connect your GitHub repo for automatic deployments.
 
 **Backend** can be deployed on [Railway](https://railway.app/), [Render](https://render.com/), or any Python-compatible host. Set your environment variables in the platform dashboard.
+
+On a free host whose disk resets on restart (Render, for example), set `DASH_DB_URI` to a hosted Postgres database so accounts are kept, and set `DASH_JWT_SECRET` so logins survive restarts. Run a single gunicorn worker (the default), because the weekly reports are scheduled inside the web process.
 
 -----
 
