@@ -263,3 +263,31 @@ def test_failed_send_does_not_count_toward_the_limit(dashboard, monkeypatch):
     ok, _ = dashboard.send_email_with_pdf("reader@example.com", "Report", "Body", io.BytesIO(b"%PDF-1.4"))
     assert not ok
     assert dashboard.emails_today.used == 0
+
+
+def test_failure_while_sending_still_counts(dashboard, monkeypatch):
+    class DroppedSMTP:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def starttls(self):
+            pass
+
+        def login(self, user, password):
+            pass
+
+        def send_message(self, msg):
+            raise dashboard.smtplib.SMTPServerDisconnected("connection dropped")
+
+    use_fake_email(dashboard, monkeypatch, DroppedSMTP)
+    dashboard.emails_today.reset()
+    ok, _ = dashboard.send_email_with_pdf("reader@example.com", "Report", "Body", io.BytesIO(b"%PDF-1.4"))
+    assert not ok
+    # The message may have been delivered before the drop, so it stays counted
+    assert dashboard.emails_today.used == 1

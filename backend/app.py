@@ -302,16 +302,18 @@ class DailyLimit:
             return self.used < self.limit
 
     def take(self):
+        """Uses one slot. Returns the day it counts against, or None if none are left."""
         with self.lock:
             self._roll_over()
             if self.used >= self.limit:
-                return False
+                return None
             self.used += 1
-            return True
+            return self.day
 
-    def give_back(self):
+    def give_back(self, day):
         with self.lock:
-            if self.used > 0:
+            # A slot from an earlier day was already cleared when the day rolled over
+            if day == self.day and self.used > 0:
                 self.used -= 1
 
     def reset(self):
@@ -519,7 +521,8 @@ def send_email_with_pdf(to_email, subject, body_text, pdf_buffer, filename="repo
     if not EMAIL_ENABLED:
         logger.info("SMTP not configured - cannot send email.")
         return False, "SMTP not configured"
-    if not emails_today.take():
+    slot_day = emails_today.take()
+    if slot_day is None:
         logger.warning("Daily email limit reached, so a report was not sent")
         return False, DAILY_LIMIT_REACHED
 
@@ -532,15 +535,24 @@ def send_email_with_pdf(to_email, subject, body_text, pdf_buffer, filename="repo
     pdf_bytes = pdf_buffer.getvalue()
     msg.add_attachment(pdf_bytes, maintype="application", subtype="pdf", filename=filename)
 
+    stage = "connecting"
     try:
         with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=20) as smtp:
             smtp.starttls()
             smtp.login(SMTP_USER, SMTP_PASS)
+            stage = "sending"
             smtp.send_message(msg)
+            stage = "sent"
         return True, "Sent"
     except Exception as e:
-        # Nothing went out, so this email doesn't count toward today's limit
-        emails_today.give_back()
+        if stage == "sent":
+            # The mail server accepted the email; only closing the connection failed
+            logger.warning("Email sent, but closing the mail connection failed: %s", e)
+            return True, "Sent"
+        if stage == "connecting":
+            # Nothing reached the mail server, so this email doesn't count toward the limit.
+            # A failure while sending stays counted, since the email may have gone out.
+            emails_today.give_back(slot_day)
         logger.error("Email send failed: %s", e)
         return False, str(e)
 
