@@ -3,3 +3,6 @@
 # Python packages (requirements.txt sits at the repo root).
 [build]
   base = "frontend"
+  # Relative to base, so this publishes the frontend folder itself and overrides any
+  # publish folder typed into the Netlify settings
+  publish = "."

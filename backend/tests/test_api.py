@@ -189,7 +189,18 @@ def test_exports(client):
     assert pdf.data[:4] == b"%PDF"
 
 
+def use_fake_email(dashboard, monkeypatch, smtp_class):
+    monkeypatch.setattr(dashboard, "EMAIL_ENABLED", True)
+    monkeypatch.setattr(dashboard, "SMTP_HOST", "smtp.example.com")
+    monkeypatch.setattr(dashboard, "SMTP_USER", "demo@example.com")
+    monkeypatch.setattr(dashboard, "SMTP_PASS", "app-password")
+    monkeypatch.setattr(dashboard, "SENDER_EMAIL", "demo@example.com")
+    monkeypatch.setattr(dashboard.smtplib, "SMTP", smtp_class)
+
+
 def test_daily_email_limit(client, dashboard, monkeypatch):
+    # Jobs left over from earlier tests must not send while email is switched on here
+    dashboard.scheduler.remove_all_jobs()
     sent = []
 
     class FakeSMTP:
@@ -211,22 +222,44 @@ def test_daily_email_limit(client, dashboard, monkeypatch):
         def send_message(self, msg):
             sent.append(msg["To"])
 
-    monkeypatch.setattr(dashboard, "EMAIL_ENABLED", True)
-    monkeypatch.setattr(dashboard, "SMTP_HOST", "smtp.example.com")
-    monkeypatch.setattr(dashboard, "SMTP_USER", "demo@example.com")
-    monkeypatch.setattr(dashboard, "SMTP_PASS", "app-password")
-    monkeypatch.setattr(dashboard, "SENDER_EMAIL", "demo@example.com")
-    monkeypatch.setattr(dashboard.smtplib, "SMTP", FakeSMTP)
+    use_fake_email(dashboard, monkeypatch, FakeSMTP)
+
+    token = register(client, "capped@example.com").get_json()["token"]
+    res = client.post("/api/schedule-email", json={"target_email": "capped@example.com"}, headers=auth_header(token))
+    assert res.status_code == 200
+    schedule_id = res.get_json()["id"]
+    dashboard.scheduler.remove_all_jobs()  # the job is run by hand below
 
     for i in range(dashboard.MAX_EMAILS_PER_DAY):
         ok, _ = dashboard.send_email_with_pdf(f"reader{i}@example.com", "Report", "Body", io.BytesIO(b"%PDF-1.4"))
         assert ok
     ok, reason = dashboard.send_email_with_pdf("late@example.com", "Report", "Body", io.BytesIO(b"%PDF-1.4"))
     assert not ok
-    assert "limit" in reason.lower()
+    assert reason == dashboard.DAILY_LIMIT_REACHED
     assert len(sent) == dashboard.MAX_EMAILS_PER_DAY
 
+    # A report that comes due once the limit is used up is retried after midnight UTC
+    dashboard.scheduled_job_send(schedule_id, "capped@example.com", None, None, None, None)
+    assert len(sent) == dashboard.MAX_EMAILS_PER_DAY
+    assert dashboard.scheduler.get_job(f"scheduled_email_retry_{schedule_id}") is not None
+    schedules = client.get("/api/schedules", headers=auth_header(token)).get_json()["schedules"]
+    tomorrow = dashboard.start_of_next_utc_day().date().isoformat()
+    assert schedules[0]["next_run"].startswith(tomorrow)
+
     # New schedules are refused once the day's emails are used up
-    token = register(client, "capped@example.com").get_json()["token"]
-    res = client.post("/api/schedule-email", json={"target_email": "capped@example.com"}, headers=auth_header(token))
+    other = register(client, "capped-too@example.com").get_json()["token"]
+    res = client.post("/api/schedule-email", json={"target_email": "capped-too@example.com"}, headers=auth_header(other))
     assert res.status_code == 429
+    dashboard.scheduler.remove_all_jobs()
+
+
+def test_failed_send_does_not_count_toward_the_limit(dashboard, monkeypatch):
+    class BrokenSMTP:
+        def __init__(self, *args, **kwargs):
+            raise OSError("mail server unreachable")
+
+    use_fake_email(dashboard, monkeypatch, BrokenSMTP)
+    dashboard.emails_today.reset()
+    ok, _ = dashboard.send_email_with_pdf("reader@example.com", "Report", "Body", io.BytesIO(b"%PDF-1.4"))
+    assert not ok
+    assert dashboard.emails_today.used == 0

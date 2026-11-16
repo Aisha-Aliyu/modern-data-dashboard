@@ -309,15 +309,26 @@ class DailyLimit:
             self.used += 1
             return True
 
+    def give_back(self):
+        with self.lock:
+            if self.used > 0:
+                self.used -= 1
+
     def reset(self):
         with self.lock:
             self.day = None
             self.used = 0
 
 
+def start_of_next_utc_day():
+    tomorrow = datetime.now(timezone.utc).date() + timedelta(days=1)
+    return datetime(tomorrow.year, tomorrow.month, tomorrow.day, tzinfo=timezone.utc)
+
+
 # Reports are sent from the SMTP account in the settings (a personal Gmail), so the total
 # per day is capped. Nobody can use the schedule form to send bulk mail from it.
 MAX_EMAILS_PER_DAY = 20
+DAILY_LIMIT_REACHED = "Daily email limit reached"
 emails_today = DailyLimit(MAX_EMAILS_PER_DAY)
 
 
@@ -510,7 +521,7 @@ def send_email_with_pdf(to_email, subject, body_text, pdf_buffer, filename="repo
         return False, "SMTP not configured"
     if not emails_today.take():
         logger.warning("Daily email limit reached, so a report was not sent")
-        return False, "Daily email limit reached"
+        return False, DAILY_LIMIT_REACHED
 
     msg = EmailMessage()
     msg["Subject"] = subject
@@ -528,6 +539,8 @@ def send_email_with_pdf(to_email, subject, body_text, pdf_buffer, filename="repo
             smtp.send_message(msg)
         return True, "Sent"
     except Exception as e:
+        # Nothing went out, so this email doesn't count toward today's limit
+        emails_today.give_back()
         logger.error("Email send failed: %s", e)
         return False, str(e)
 
@@ -547,19 +560,35 @@ def scheduled_job_send(id, target_email, region, product, start_date, end_date):
             remove_schedule_job(id)
             return
 
+        reason = None
         try:
             df = apply_filters(load_data(), start_date=schedule.start_date, end_date=schedule.end_date,
                                region=schedule.region, product=schedule.product)
             stats = aggregate_stats(df)
             pdf_buffer = build_pdf_buffer({}, stats, title="Scheduled Dashboard Report")
-            success, msg = send_email_with_pdf(schedule.target_email, "Scheduled Dashboard Report", "Attached is your scheduled report.", pdf_buffer, filename="scheduled_report.pdf")
-            logger.info("Scheduled send %s: %s %s", id, success, msg)
+            success, reason = send_email_with_pdf(schedule.target_email, "Scheduled Dashboard Report", "Attached is your scheduled report.", pdf_buffer, filename="scheduled_report.pdf")
+            logger.info("Scheduled send %s: %s %s", id, success, reason)
         except Exception:
             logger.exception("Scheduled job error")
 
+        if reason == DAILY_LIMIT_REACHED:
+            # Today's emails are used up, so this report goes out just after the limit resets
+            next_run = start_of_next_utc_day() + timedelta(minutes=5)
+            scheduler.add_job(
+                scheduled_job_send,
+                'date',
+                run_date=next_run,
+                id=f"scheduled_email_retry_{id}",
+                replace_existing=True,
+                misfire_grace_time=None,
+                args=[id, target_email, region, product, start_date, end_date]
+            )
+        else:
+            next_run = datetime.now(timezone.utc) + timedelta(days=7)
+
         # Saving the next run means a restart picks up from here instead of sending again
         try:
-            schedule.next_run = utcnow() + timedelta(days=7)
+            schedule.next_run = next_run.replace(tzinfo=None)
             db.session.commit()
         except SQLAlchemyError:
             db.session.rollback()
@@ -581,10 +610,11 @@ def add_schedule_job(schedule_id, target_email, region, product, start_date, end
     )
 
 def remove_schedule_job(schedule_id):
-    try:
-        scheduler.remove_job(f"scheduled_email_{schedule_id}")
-    except Exception:
-        pass  # the job was already gone
+    for job_id in (f"scheduled_email_{schedule_id}", f"scheduled_email_retry_{schedule_id}"):
+        try:
+            scheduler.remove_job(job_id)
+        except Exception:
+            pass  # the job was already gone
 
 # -----------------------
 # Error responses
