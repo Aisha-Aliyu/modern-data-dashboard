@@ -584,17 +584,11 @@ def scheduled_job_send(id, target_email, region, product, start_date, end_date):
             logger.exception("Scheduled job error")
 
         if reason == DAILY_LIMIT_REACHED:
-            # Today's emails are used up, so this report goes out just after the limit resets
+            # Today's emails are used up. The weekly schedule moves to just after the limit
+            # resets, so this report still goes out and later ones stay a week apart. (The
+            # scheduler has already set this job's next run, so replacing it here sticks.)
             next_run = start_of_next_utc_day() + timedelta(minutes=5)
-            scheduler.add_job(
-                scheduled_job_send,
-                'date',
-                run_date=next_run,
-                id=f"scheduled_email_retry_{id}",
-                replace_existing=True,
-                misfire_grace_time=None,
-                args=[id, target_email, region, product, start_date, end_date]
-            )
+            add_schedule_job(id, target_email, region, product, start_date, end_date, first_run=next_run)
         else:
             next_run = datetime.now(timezone.utc) + timedelta(days=7)
 
@@ -622,11 +616,10 @@ def add_schedule_job(schedule_id, target_email, region, product, start_date, end
     )
 
 def remove_schedule_job(schedule_id):
-    for job_id in (f"scheduled_email_{schedule_id}", f"scheduled_email_retry_{schedule_id}"):
-        try:
-            scheduler.remove_job(job_id)
-        except Exception:
-            pass  # the job was already gone
+    try:
+        scheduler.remove_job(f"scheduled_email_{schedule_id}")
+    except Exception:
+        pass  # the job was already gone
 
 # -----------------------
 # Error responses

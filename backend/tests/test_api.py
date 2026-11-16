@@ -2,6 +2,7 @@ import csv
 import io
 import os
 import re
+from datetime import datetime, timedelta, timezone
 
 CSV_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "sales_data.csv")
 ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -238,13 +239,31 @@ def test_daily_email_limit(client, dashboard, monkeypatch):
     assert reason == dashboard.DAILY_LIMIT_REACHED
     assert len(sent) == dashboard.MAX_EMAILS_PER_DAY
 
-    # A report that comes due once the limit is used up is retried after midnight UTC
+    # A report that comes due once the limit is used up moves to just after midnight UTC,
+    # in the scheduler and in the saved schedule alike
+    retry_at = dashboard.start_of_next_utc_day() + timedelta(minutes=5)
     dashboard.scheduled_job_send(schedule_id, "capped@example.com", None, None, None, None)
     assert len(sent) == dashboard.MAX_EMAILS_PER_DAY
-    assert dashboard.scheduler.get_job(f"scheduled_email_retry_{schedule_id}") is not None
+    assert dashboard.scheduler.get_job(f"scheduled_email_{schedule_id}").next_run_time == retry_at
     schedules = client.get("/api/schedules", headers=auth_header(token)).get_json()["schedules"]
-    tomorrow = dashboard.start_of_next_utc_day().date().isoformat()
-    assert schedules[0]["next_run"].startswith(tomorrow)
+    assert schedules[0]["next_run"] == retry_at.replace(tzinfo=None).isoformat()
+
+    # After a restart the job is rebuilt from the saved time, so both still agree
+    dashboard.scheduler.remove_all_jobs()
+    with dashboard.app.app_context():
+        dashboard.load_existing_schedules_into_jobs()
+    assert dashboard.scheduler.get_job(f"scheduled_email_{schedule_id}").next_run_time == retry_at
+
+    # Once the limit resets the retry sends, and the next report is a week later
+    dashboard.emails_today.reset()
+    dashboard.scheduled_job_send(schedule_id, "capped@example.com", None, None, None, None)
+    assert sent[-1] == "capped@example.com"
+    schedules = client.get("/api/schedules", headers=auth_header(token)).get_json()["schedules"]
+    saved = datetime.fromisoformat(schedules[0]["next_run"]).replace(tzinfo=timezone.utc)
+    assert abs(saved - (datetime.now(timezone.utc) + timedelta(days=7))) < timedelta(minutes=1)
+    dashboard.emails_today.reset()
+    for _ in range(dashboard.MAX_EMAILS_PER_DAY):
+        dashboard.emails_today.take()
 
     # New schedules are refused once the day's emails are used up
     other = register(client, "capped-too@example.com").get_json()["token"]
