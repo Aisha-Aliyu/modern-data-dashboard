@@ -278,8 +278,51 @@ failed_logins = AttemptLimiter(limit=8, window_seconds=900)
 failed_logins_for_email = AttemptLimiter(limit=50, window_seconds=3600)
 
 
+class DailyLimit:
+    """Counts uses per UTC day, in memory.
+
+    A restart starts the count again. That's acceptable here because the free server
+    only stays up while someone is using it."""
+
+    def __init__(self, limit):
+        self.limit = limit
+        self.day = None
+        self.used = 0
+        self.lock = threading.Lock()
+
+    def _roll_over(self):
+        today = datetime.now(timezone.utc).date()
+        if today != self.day:
+            self.day = today
+            self.used = 0
+
+    def available(self):
+        with self.lock:
+            self._roll_over()
+            return self.used < self.limit
+
+    def take(self):
+        with self.lock:
+            self._roll_over()
+            if self.used >= self.limit:
+                return False
+            self.used += 1
+            return True
+
+    def reset(self):
+        with self.lock:
+            self.day = None
+            self.used = 0
+
+
+# Reports are sent from the SMTP account in the settings (a personal Gmail), so the total
+# per day is capped. Nobody can use the schedule form to send bulk mail from it.
+MAX_EMAILS_PER_DAY = 20
+emails_today = DailyLimit(MAX_EMAILS_PER_DAY)
+
+
 def reset_rate_limits():
-    for limiter in (auth_requests_by_ip, failed_logins, failed_logins_for_email):
+    for limiter in (auth_requests_by_ip, failed_logins, failed_logins_for_email, emails_today):
         limiter.reset()
 
 # -----------------------
@@ -465,6 +508,9 @@ def send_email_with_pdf(to_email, subject, body_text, pdf_buffer, filename="repo
     if not EMAIL_ENABLED:
         logger.info("SMTP not configured - cannot send email.")
         return False, "SMTP not configured"
+    if not emails_today.take():
+        logger.warning("Daily email limit reached, so a report was not sent")
+        return False, "Daily email limit reached"
 
     msg = EmailMessage()
     msg["Subject"] = subject
@@ -719,6 +765,9 @@ def schedule_email():
     start_date = start.date().isoformat() if start is not None else None
     end_date = end.date().isoformat() if end is not None else None
     freq = "weekly"  # the only frequency the scheduler supports
+
+    if EMAIL_ENABLED and not emails_today.available():
+        return error("This demo has sent all the reports it can for today. Please try again tomorrow.", 429)
 
     try:
         # calculate next_run (simple: next week)

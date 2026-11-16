@@ -1,4 +1,5 @@
 import csv
+import io
 import os
 import re
 
@@ -186,3 +187,46 @@ def test_exports(client):
     })
     assert pdf.status_code == 200
     assert pdf.data[:4] == b"%PDF"
+
+
+def test_daily_email_limit(client, dashboard, monkeypatch):
+    sent = []
+
+    class FakeSMTP:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def starttls(self):
+            pass
+
+        def login(self, user, password):
+            pass
+
+        def send_message(self, msg):
+            sent.append(msg["To"])
+
+    monkeypatch.setattr(dashboard, "EMAIL_ENABLED", True)
+    monkeypatch.setattr(dashboard, "SMTP_HOST", "smtp.example.com")
+    monkeypatch.setattr(dashboard, "SMTP_USER", "demo@example.com")
+    monkeypatch.setattr(dashboard, "SMTP_PASS", "app-password")
+    monkeypatch.setattr(dashboard, "SENDER_EMAIL", "demo@example.com")
+    monkeypatch.setattr(dashboard.smtplib, "SMTP", FakeSMTP)
+
+    for i in range(dashboard.MAX_EMAILS_PER_DAY):
+        ok, _ = dashboard.send_email_with_pdf(f"reader{i}@example.com", "Report", "Body", io.BytesIO(b"%PDF-1.4"))
+        assert ok
+    ok, reason = dashboard.send_email_with_pdf("late@example.com", "Report", "Body", io.BytesIO(b"%PDF-1.4"))
+    assert not ok
+    assert "limit" in reason.lower()
+    assert len(sent) == dashboard.MAX_EMAILS_PER_DAY
+
+    # New schedules are refused once the day's emails are used up
+    token = register(client, "capped@example.com").get_json()["token"]
+    res = client.post("/api/schedule-email", json={"target_email": "capped@example.com"}, headers=auth_header(token))
+    assert res.status_code == 429
