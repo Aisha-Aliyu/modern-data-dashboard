@@ -263,6 +263,12 @@ def test_daily_email_limit(client, dashboard, monkeypatch):
     schedules = client.get("/api/schedules", headers=auth_header(token)).get_json()["schedules"]
     saved = datetime.fromisoformat(schedules[0]["next_run"]).replace(tzinfo=timezone.utc)
     assert abs(saved - (datetime.now(timezone.utc) + timedelta(days=7))) < timedelta(minutes=1)
+    # However late the retry ran, the job and the saved time agree, before and after a restart
+    assert dashboard.scheduler.get_job(f"scheduled_email_{schedule_id}").next_run_time == saved
+    dashboard.scheduler.remove_all_jobs()
+    with dashboard.app.app_context():
+        dashboard.load_existing_schedules_into_jobs()
+    assert dashboard.scheduler.get_job(f"scheduled_email_{schedule_id}").next_run_time == saved
     dashboard.emails_today.reset()
     for _ in range(dashboard.MAX_EMAILS_PER_DAY):
         dashboard.emails_today.take()

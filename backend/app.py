@@ -587,13 +587,15 @@ def scheduled_job_send(id, target_email, region, product, start_date, end_date):
             logger.exception("Scheduled job error")
 
         if reason == DAILY_LIMIT_REACHED:
-            # Today's emails are used up. The weekly schedule moves to just after the limit
-            # resets, so this report still goes out and later ones stay a week apart. (The
-            # scheduler has already set this job's next run, so replacing it here sticks.)
+            # Today's emails are used up, so this report goes out just after the limit resets
             next_run = start_of_next_utc_day() + timedelta(minutes=5)
-            add_schedule_job(id, target_email, region, product, start_date, end_date, first_run=next_run)
         else:
             next_run = datetime.now(timezone.utc) + timedelta(days=7)
+        # The job is set to the same time that is saved below, so the scheduler and the
+        # database always agree, even when a run happened late because the server was
+        # asleep. (The scheduler sets a job's next run before running it, so replacing the
+        # job here sticks.)
+        add_schedule_job(id, target_email, region, product, start_date, end_date, first_run=next_run)
 
         # Saving the next run means a restart picks up from here instead of sending again
         try:
