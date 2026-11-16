@@ -11,7 +11,8 @@ BACKEND_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 def dashboard(tmp_path_factory):
     """Import the app against a throwaway SQLite database."""
     db_file = tmp_path_factory.mktemp("db") / "test.db"
-    os.environ["DASH_DB_URI"] = f"sqlite:///{db_file}"
+    # CI also runs the suite against a real Postgres database through TEST_DATABASE_URL
+    os.environ["DASH_DB_URI"] = os.environ.get("TEST_DATABASE_URL") or f"sqlite:///{db_file}"
     os.environ["DASH_JWT_SECRET"] = "test-secret-that-is-long-enough-for-hs256"
     # Empty rather than removed, so a local backend/.env can't switch real email on
     # (python-dotenv leaves variables that are already set alone)

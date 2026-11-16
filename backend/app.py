@@ -71,9 +71,12 @@ def database_uri():
     uri = env("DASH_DB_URI", "DATABASE_URL")
     if not uri:
         return f"sqlite:///{os.path.join(BASE_DIR, 'dashboard.db')}"
-    # Hosts often hand out postgres:// links, which SQLAlchemy no longer accepts
-    if uri.startswith("postgres://"):
-        uri = "postgresql://" + uri[len("postgres://"):]
+    # Hosts hand out postgres:// or postgresql:// links. SQLAlchemy no longer accepts the
+    # first, and since version 2.1 it uses the psycopg 3 driver for the second, while this
+    # app installs psycopg2. Naming the driver keeps both kinds of link working.
+    for prefix in ("postgres://", "postgresql://"):
+        if uri.startswith(prefix):
+            return "postgresql+psycopg2://" + uri[len(prefix):]
     return uri
 
 
@@ -278,8 +281,64 @@ failed_logins = AttemptLimiter(limit=8, window_seconds=900)
 failed_logins_for_email = AttemptLimiter(limit=50, window_seconds=3600)
 
 
+class DailyLimit:
+    """Counts uses per UTC day, in memory.
+
+    A restart starts the count again. That's acceptable here because the free server
+    only stays up while someone is using it."""
+
+    def __init__(self, limit):
+        self.limit = limit
+        self.day = None
+        self.used = 0
+        self.lock = threading.Lock()
+
+    def _roll_over(self):
+        today = datetime.now(timezone.utc).date()
+        if today != self.day:
+            self.day = today
+            self.used = 0
+
+    def available(self):
+        with self.lock:
+            self._roll_over()
+            return self.used < self.limit
+
+    def take(self):
+        """Uses one slot. Returns the day it counts against, or None if none are left."""
+        with self.lock:
+            self._roll_over()
+            if self.used >= self.limit:
+                return None
+            self.used += 1
+            return self.day
+
+    def give_back(self, day):
+        with self.lock:
+            # A slot from an earlier day was already cleared when the day rolled over
+            if day == self.day and self.used > 0:
+                self.used -= 1
+
+    def reset(self):
+        with self.lock:
+            self.day = None
+            self.used = 0
+
+
+def start_of_next_utc_day():
+    tomorrow = datetime.now(timezone.utc).date() + timedelta(days=1)
+    return datetime(tomorrow.year, tomorrow.month, tomorrow.day, tzinfo=timezone.utc)
+
+
+# Reports are sent from the SMTP account in the settings (a personal Gmail), so the total
+# per day is capped. Nobody can use the schedule form to send bulk mail from it.
+MAX_EMAILS_PER_DAY = 20
+DAILY_LIMIT_REACHED = "Daily email limit reached"
+emails_today = DailyLimit(MAX_EMAILS_PER_DAY)
+
+
 def reset_rate_limits():
-    for limiter in (auth_requests_by_ip, failed_logins, failed_logins_for_email):
+    for limiter in (auth_requests_by_ip, failed_logins, failed_logins_for_email, emails_today):
         limiter.reset()
 
 # -----------------------
@@ -465,6 +524,10 @@ def send_email_with_pdf(to_email, subject, body_text, pdf_buffer, filename="repo
     if not EMAIL_ENABLED:
         logger.info("SMTP not configured - cannot send email.")
         return False, "SMTP not configured"
+    slot_day = emails_today.take()
+    if slot_day is None:
+        logger.warning("Daily email limit reached, so a report was not sent")
+        return False, DAILY_LIMIT_REACHED
 
     msg = EmailMessage()
     msg["Subject"] = subject
@@ -475,13 +538,24 @@ def send_email_with_pdf(to_email, subject, body_text, pdf_buffer, filename="repo
     pdf_bytes = pdf_buffer.getvalue()
     msg.add_attachment(pdf_bytes, maintype="application", subtype="pdf", filename=filename)
 
+    stage = "connecting"
     try:
         with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=20) as smtp:
             smtp.starttls()
             smtp.login(SMTP_USER, SMTP_PASS)
+            stage = "sending"
             smtp.send_message(msg)
+            stage = "sent"
         return True, "Sent"
     except Exception as e:
+        if stage == "sent":
+            # The mail server accepted the email; only closing the connection failed
+            logger.warning("Email sent, but closing the mail connection failed: %s", e)
+            return True, "Sent"
+        if stage == "connecting":
+            # Nothing reached the mail server, so this email doesn't count toward the limit.
+            # A failure while sending stays counted, since the email may have gone out.
+            emails_today.give_back(slot_day)
         logger.error("Email send failed: %s", e)
         return False, str(e)
 
@@ -501,19 +575,31 @@ def scheduled_job_send(id, target_email, region, product, start_date, end_date):
             remove_schedule_job(id)
             return
 
+        reason = None
         try:
             df = apply_filters(load_data(), start_date=schedule.start_date, end_date=schedule.end_date,
                                region=schedule.region, product=schedule.product)
             stats = aggregate_stats(df)
             pdf_buffer = build_pdf_buffer({}, stats, title="Scheduled Dashboard Report")
-            success, msg = send_email_with_pdf(schedule.target_email, "Scheduled Dashboard Report", "Attached is your scheduled report.", pdf_buffer, filename="scheduled_report.pdf")
-            logger.info("Scheduled send %s: %s %s", id, success, msg)
+            success, reason = send_email_with_pdf(schedule.target_email, "Scheduled Dashboard Report", "Attached is your scheduled report.", pdf_buffer, filename="scheduled_report.pdf")
+            logger.info("Scheduled send %s: %s %s", id, success, reason)
         except Exception:
             logger.exception("Scheduled job error")
 
+        if reason == DAILY_LIMIT_REACHED:
+            # Today's emails are used up, so this report goes out just after the limit resets
+            next_run = start_of_next_utc_day() + timedelta(minutes=5)
+        else:
+            next_run = datetime.now(timezone.utc) + timedelta(days=7)
+        # The job is set to the same time that is saved below, so the scheduler and the
+        # database always agree, even when a run happened late because the server was
+        # asleep. (The scheduler sets a job's next run before running it, so replacing the
+        # job here sticks.)
+        add_schedule_job(id, target_email, region, product, start_date, end_date, first_run=next_run)
+
         # Saving the next run means a restart picks up from here instead of sending again
         try:
-            schedule.next_run = utcnow() + timedelta(days=7)
+            schedule.next_run = next_run.replace(tzinfo=None)
             db.session.commit()
         except SQLAlchemyError:
             db.session.rollback()
@@ -719,6 +805,9 @@ def schedule_email():
     start_date = start.date().isoformat() if start is not None else None
     end_date = end.date().isoformat() if end is not None else None
     freq = "weekly"  # the only frequency the scheduler supports
+
+    if EMAIL_ENABLED and not emails_today.available():
+        return error("This demo has sent all the reports it can for today. Please try again tomorrow.", 429)
 
     try:
         # calculate next_run (simple: next week)

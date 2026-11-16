@@ -1,6 +1,10 @@
 import csv
+import io
 import os
 import re
+
+import pytest
+from datetime import datetime, timedelta, timezone
 
 CSV_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "sales_data.csv")
 ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -28,7 +32,7 @@ def test_health_reports_database(client):
     assert res.status_code == 200
     body = res.get_json()
     assert body["database"] == "ok"
-    assert body["database_engine"] == "sqlite"
+    assert body["database_engine"] == ("postgresql" if os.environ.get("TEST_DATABASE_URL") else "sqlite")
 
 
 def test_stats_match_the_csv_and_use_iso_dates(client):
@@ -186,3 +190,149 @@ def test_exports(client):
     })
     assert pdf.status_code == 200
     assert pdf.data[:4] == b"%PDF"
+
+
+def use_fake_email(dashboard, monkeypatch, smtp_class):
+    monkeypatch.setattr(dashboard, "EMAIL_ENABLED", True)
+    monkeypatch.setattr(dashboard, "SMTP_HOST", "smtp.example.com")
+    monkeypatch.setattr(dashboard, "SMTP_USER", "demo@example.com")
+    monkeypatch.setattr(dashboard, "SMTP_PASS", "app-password")
+    monkeypatch.setattr(dashboard, "SENDER_EMAIL", "demo@example.com")
+    monkeypatch.setattr(dashboard.smtplib, "SMTP", smtp_class)
+
+
+def test_daily_email_limit(client, dashboard, monkeypatch):
+    # Jobs left over from earlier tests must not send while email is switched on here
+    dashboard.scheduler.remove_all_jobs()
+    sent = []
+
+    class FakeSMTP:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def starttls(self):
+            pass
+
+        def login(self, user, password):
+            pass
+
+        def send_message(self, msg):
+            sent.append(msg["To"])
+
+    use_fake_email(dashboard, monkeypatch, FakeSMTP)
+
+    token = register(client, "capped@example.com").get_json()["token"]
+    res = client.post("/api/schedule-email", json={"target_email": "capped@example.com"}, headers=auth_header(token))
+    assert res.status_code == 200
+    schedule_id = res.get_json()["id"]
+    dashboard.scheduler.remove_all_jobs()  # the job is run by hand below
+
+    for i in range(dashboard.MAX_EMAILS_PER_DAY):
+        ok, _ = dashboard.send_email_with_pdf(f"reader{i}@example.com", "Report", "Body", io.BytesIO(b"%PDF-1.4"))
+        assert ok
+    ok, reason = dashboard.send_email_with_pdf("late@example.com", "Report", "Body", io.BytesIO(b"%PDF-1.4"))
+    assert not ok
+    assert reason == dashboard.DAILY_LIMIT_REACHED
+    assert len(sent) == dashboard.MAX_EMAILS_PER_DAY
+
+    # A report that comes due once the limit is used up moves to just after midnight UTC,
+    # in the scheduler and in the saved schedule alike
+    retry_at = dashboard.start_of_next_utc_day() + timedelta(minutes=5)
+    dashboard.scheduled_job_send(schedule_id, "capped@example.com", None, None, None, None)
+    assert len(sent) == dashboard.MAX_EMAILS_PER_DAY
+    assert dashboard.scheduler.get_job(f"scheduled_email_{schedule_id}").next_run_time == retry_at
+    schedules = client.get("/api/schedules", headers=auth_header(token)).get_json()["schedules"]
+    assert schedules[0]["next_run"] == retry_at.replace(tzinfo=None).isoformat()
+
+    # After a restart the job is rebuilt from the saved time, so both still agree
+    dashboard.scheduler.remove_all_jobs()
+    with dashboard.app.app_context():
+        dashboard.load_existing_schedules_into_jobs()
+    assert dashboard.scheduler.get_job(f"scheduled_email_{schedule_id}").next_run_time == retry_at
+
+    # Once the limit resets the retry sends, and the next report is a week later
+    dashboard.emails_today.reset()
+    dashboard.scheduled_job_send(schedule_id, "capped@example.com", None, None, None, None)
+    assert sent[-1] == "capped@example.com"
+    schedules = client.get("/api/schedules", headers=auth_header(token)).get_json()["schedules"]
+    saved = datetime.fromisoformat(schedules[0]["next_run"]).replace(tzinfo=timezone.utc)
+    assert abs(saved - (datetime.now(timezone.utc) + timedelta(days=7))) < timedelta(minutes=1)
+    # However late the retry ran, the job and the saved time agree, before and after a restart
+    assert dashboard.scheduler.get_job(f"scheduled_email_{schedule_id}").next_run_time == saved
+    dashboard.scheduler.remove_all_jobs()
+    with dashboard.app.app_context():
+        dashboard.load_existing_schedules_into_jobs()
+    assert dashboard.scheduler.get_job(f"scheduled_email_{schedule_id}").next_run_time == saved
+    dashboard.emails_today.reset()
+    for _ in range(dashboard.MAX_EMAILS_PER_DAY):
+        dashboard.emails_today.take()
+
+    # New schedules are refused once the day's emails are used up
+    other = register(client, "capped-too@example.com").get_json()["token"]
+    res = client.post("/api/schedule-email", json={"target_email": "capped-too@example.com"}, headers=auth_header(other))
+    assert res.status_code == 429
+    dashboard.scheduler.remove_all_jobs()
+
+
+def test_failed_send_does_not_count_toward_the_limit(dashboard, monkeypatch):
+    class BrokenSMTP:
+        def __init__(self, *args, **kwargs):
+            raise OSError("mail server unreachable")
+
+    use_fake_email(dashboard, monkeypatch, BrokenSMTP)
+    dashboard.emails_today.reset()
+    ok, _ = dashboard.send_email_with_pdf("reader@example.com", "Report", "Body", io.BytesIO(b"%PDF-1.4"))
+    assert not ok
+    assert dashboard.emails_today.used == 0
+
+
+def test_failure_while_sending_still_counts(dashboard, monkeypatch):
+    class DroppedSMTP:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def starttls(self):
+            pass
+
+        def login(self, user, password):
+            pass
+
+        def send_message(self, msg):
+            raise dashboard.smtplib.SMTPServerDisconnected("connection dropped")
+
+    use_fake_email(dashboard, monkeypatch, DroppedSMTP)
+    dashboard.emails_today.reset()
+    ok, _ = dashboard.send_email_with_pdf("reader@example.com", "Report", "Body", io.BytesIO(b"%PDF-1.4"))
+    assert not ok
+    # The message may have been delivered before the drop, so it stays counted
+    assert dashboard.emails_today.used == 1
+
+
+def test_postgres_links_use_the_installed_driver(dashboard, monkeypatch):
+    for link in ("postgres://u:p@db.example.com/app", "postgresql://u:p@db.example.com/app?sslmode=require"):
+        monkeypatch.setenv("DASH_DB_URI", link)
+        assert dashboard.database_uri().startswith("postgresql+psycopg2://u:p@db.example.com/app")
+    monkeypatch.setenv("DASH_DB_URI", "postgresql+psycopg2://u:p@db.example.com/app")
+    assert dashboard.database_uri() == "postgresql+psycopg2://u:p@db.example.com/app"
+
+
+def test_postgres_engine_loads_its_driver(dashboard, monkeypatch):
+    # Creating the engine imports the driver without connecting, which is the step that
+    # crashed the Render deploy when SQLAlchemy 2.1 looked for psycopg 3
+    pytest.importorskip("psycopg2")
+    from sqlalchemy import create_engine
+    monkeypatch.setenv("DASH_DB_URI", "postgresql://u:p@db.example.com/app?sslmode=require")
+    engine = create_engine(dashboard.database_uri())
+    assert engine.dialect.driver == "psycopg2"

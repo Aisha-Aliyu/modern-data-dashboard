@@ -1,0 +1,8 @@
+# The dashboard is plain HTML, CSS and JavaScript in the frontend folder, with no build
+# step. Setting the base folder here also keeps Netlify from installing the backend's
+# Python packages (requirements.txt sits at the repo root).
+[build]
+  base = "frontend"
+  # Relative to base, so this publishes the frontend folder itself and overrides any
+  # publish folder typed into the Netlify settings
+  publish = "."
