@@ -1,132 +1,47 @@
-# 📊 Modern Data Dashboard
+# Modern Data Dashboard
 
-> A full-stack interactive analytics dashboard with real-time data visualisation, advanced filtering, multi-format exports, JWT authentication, and scheduled email reports.
+A sales analytics dashboard with a Python and Flask backend and a plain JavaScript frontend. It shows sales as charts and a table, lets you filter and export the data, and can email you a report every week.
 
-[![Live Demo](https://img.shields.io/badge/Live%20Demo-Visit%20App-brightgreen?style=for-the-badge)](https://cool-blancmange-531a43.netlify.app/)
-[![Python](https://img.shields.io/badge/Python-3.x-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
-[![Flask](https://img.shields.io/badge/Flask-Backend-000000?style=for-the-badge&logo=flask)](https://flask.palletsprojects.com/)
-[![JavaScript](https://img.shields.io/badge/JavaScript-ES6+-F7DF1E?style=for-the-badge&logo=javascript)](https://developer.mozilla.org/en-US/docs/Web/JavaScript)
-[![Chart.js](https://img.shields.io/badge/Chart.js-Visualisation-FF6384?style=for-the-badge&logo=chart.js)](https://www.chartjs.org/)
-[![JWT](https://img.shields.io/badge/JWT-Authentication-000000?style=for-the-badge&logo=jsonwebtokens)](https://jwt.io/)
+Live demo: https://cool-blancmange-531a43.netlify.app
 
------
+## Features
 
-## 🌐 Live Demo
+### Dashboard
 
-👉 **[modern-data-dashboard.netlify.app](https://cool-blancmange-531a43.netlify.app/)**
+- Summary cards for total sales and total revenue.
+- A line chart of daily sales, a pie chart of sales by product and a bar chart of sales by region, drawn with Chart.js.
+- Filters for date range, product and region, plus quick presets for the last 3, 5 or 7 days.
+- Light and dark mode.
 
------
+### Data table
 
-## 📖 About
+- Click a column header to sort by it.
+- Search across every field as you type.
+- Export to CSV, to Excel (formatted with XlsxWriter) or to PDF (with the charts, summary cards and table, built with ReportLab).
 
-A production-grade full-stack data dashboard that demonstrates end-to-end engineering skills — from a Python/Flask REST API with JWT authentication and database management, to a responsive JavaScript frontend with interactive Chart.js visualisations and multi-format data exports.
+### Accounts and reports
 
-This project highlights the ability to build internal tooling and analytics platforms that real businesses use — not just CRUD apps.
+- Register and log in. Sessions use JWTs, and you need to be logged in to export or schedule reports.
+- Schedule a weekly email report with your filtered data and charts. The jobs run on APScheduler.
 
------
+## Stack
 
-## ✨ Features
+- Frontend: HTML, CSS, JavaScript and Chart.js, hosted on Netlify.
+- Backend: Python 3 and Flask, with SQLAlchemy (SQLite or PostgreSQL), Pandas for the data work, XlsxWriter and ReportLab for exports, and APScheduler for the weekly emails.
 
-### 📈 Dashboard & Visualisation
+## Run it locally
 
-- Summary KPI cards (total sales, total revenue)
-- **Line chart** — Daily sales trend over time
-- **Pie chart** — Sales breakdown by product
-- **Bar chart** — Sales performance by region
-- Interactive filters: date range, product, region, preset timeframes (last 3/5/7 days)
-- Light / dark mode toggle 🌙
-
-### 📋 Data Table
-
-- Sortable columns (click header to sort ascending/descending)
-- Live search filtering across all fields
-- **Export to CSV** — raw data download
-- **Export to Excel** — formatted spreadsheet via XlsxWriter
-- **Export to PDF** — includes charts, summary cards, and table via ReportLab
-
-### 🔐 Authentication
-
-- User registration and login
-- JWT-based session management
-- Protected routes for scheduling and export features
-
-### 📧 Scheduled Email Reports
-
-- Schedule automated weekly email reports
-- Reports include filtered dashboard data and charts
-- Background job scheduling via **APScheduler**
-
------
-
-## 🛠️ Tech Stack
-
-|Layer           |Technology                              |
-|----------------|----------------------------------------|
-|Frontend        |HTML5, CSS3, JavaScript (ES6+), Chart.js|
-|Backend         |Python 3, Flask                         |
-|Database        |SQLAlchemy (SQLite / PostgreSQL)        |
-|Auth            |JWT (JSON Web Tokens)                   |
-|Data Processing |Pandas                                  |
-|Excel Export    |XlsxWriter                              |
-|PDF Export      |ReportLab                               |
-|Email Scheduling|APScheduler                             |
-|Frontend Deploy |Netlify                                 |
-|Backend Deploy  |(configurable: Railway, Render, Heroku) |
-
------
-
-## 📂 Project Structure
-
-```
-modern-data-dashboard/
-├─ backend/
-│  ├─ app.py              # Flask application & API routes
-│  ├─ models.py           # SQLAlchemy database models
-│  ├─ auth.py             # JWT authentication logic
-│  ├─ scheduler.py        # APScheduler email jobs
-│  ├─ exports.py          # CSV / Excel / PDF generation
-│  └─ requirements.txt    # Python dependencies
-├─ frontend/
-│  ├─ index.html          # Main dashboard
-│  ├─ login.html          # Auth pages
-│  ├─ scripts.js          # Chart.js, filters, API calls
-│  └─ styles.css          # Responsive UI styles
-├─ requirements.txt       # Root dependencies
-└─ README.md
-```
-
------
-
-## ⚙️ Getting Started
-
-### Prerequisites
-
-- Python 3.9+
-- Node.js (optional, for frontend tooling)
-
-### 1. Clone the repo
+You'll need Python 3.9 or newer. Node.js is only needed if you want to serve the frontend with `npx`.
 
 ```bash
 git clone https://github.com/Aisha-Aliyu/modern-data-dashboard.git
-cd modern-data-dashboard
-```
-
-### 2. Set up the Python backend
-
-```bash
-cd backend
+cd modern-data-dashboard/backend
 python -m venv venv
-
-# Activate virtual environment
-source venv/bin/activate       # Linux/macOS
-venv\Scripts\activate          # Windows
-
+source venv/bin/activate      # on Windows: venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-### 3. Configure environment variables
-
-Create a `.env` file in `/backend`. All of these are optional when running locally. Without `DASH_DB_URI` the app uses a SQLite file, and without the SMTP settings scheduled reports are saved but not emailed.
+You can add a `.env` file in `backend`. Everything in it is optional when you run locally. Without `DASH_DB_URI` the app uses a SQLite file, and without the SMTP settings scheduled reports are saved but not emailed.
 
 ```env
 # Postgres connection string; leave it out to use SQLite
@@ -139,57 +54,31 @@ DASH_SMTP_USER=your_email@gmail.com
 DASH_SMTP_PASS=your_app_password
 ```
 
-### 4. Run the Flask backend
+Start the backend. It runs at http://localhost:5000.
 
 ```bash
 export FLASK_APP=app.py
 flask run
 ```
 
-Backend runs at <http://localhost:5000>
+Then open `frontend/index.html` in your browser, or serve it with `npx http-server frontend -p 3000` from the project root. Set `API_BASE` in `frontend/scripts.js` to your backend URL.
 
-### 5. Run the frontend
+## Deployment
 
-Open `frontend/index.html` directly in your browser, or serve it:
-
-```bash
-npx http-server frontend -p 3000
-```
-
-> Make sure to update `API_BASE` in `frontend/scripts.js` to point to your backend URL.
-
------
-
-## 🚀 Deployment
-
-**Frontend** is deployed on **Netlify** — connect your GitHub repo for automatic deployments.
-
-**Backend** can be deployed on [Railway](https://railway.app/), [Render](https://render.com/), or any Python-compatible host. Set your environment variables in the platform dashboard.
+The frontend is on Netlify. The backend can run on Render, Railway or any host that runs Python, with the environment variables set in the host's dashboard.
 
 On a free host whose disk resets on restart (Render, for example), set `DASH_DB_URI` to a hosted Postgres database so accounts are kept, and set `DASH_JWT_SECRET` so logins survive restarts. Run a single gunicorn worker (the default), because the weekly reports are scheduled inside the web process.
 
------
+## What I'd add next
 
-## 🗺️ Roadmap
+Live updates over WebSockets, admin and viewer roles, a custom date range picker, shareable dashboard links and team workspaces.
 
-- [ ] Real-time data updates via WebSockets
-- [ ] Role-based access control (Admin / Viewer)
-- [ ] Custom date range picker
-- [ ] Dashboard sharing via public links
-- [ ] Multi-user support with team workspaces
+## Contact
 
------
+Aisha Aliyu, full stack and frontend engineer
 
-## 👩‍💻 Author
+- Portfolio: https://humairah.netlify.app
+- LinkedIn: https://www.linkedin.com/in/aisha-aliyu-dev
+- GitHub: https://github.com/Aisha-Aliyu
 
-**Aisha Aliyu** — Full-Stack & Frontend Engineer
-
-- 🌐 Portfolio: [humairah.netlify.app](https://humairah.netlify.app)
-- 💼 LinkedIn: [https://www.linkedin.com/in/aisha-aliyu-dev](https://www.linkedin.com/in/aisha-aliyu-dev)
-- 🐙 GitHub: [@Aisha-Aliyu](https://github.com/Aisha-Aliyu)
-
------
-
-## 📜 License
-
-This project is open source and available under the [MIT License](./LICENSE).
+License: MIT
